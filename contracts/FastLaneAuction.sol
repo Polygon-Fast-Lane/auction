@@ -1,4 +1,4 @@
-//SPDX-License-Identifier: Unlicense
+//SPDX-License-Identifier: Unlicensed
 pragma solidity ^0.8.13;
 
 import "openzeppelin-contracts/contracts/utils/Address.sol";
@@ -16,11 +16,6 @@ struct Bid {
     address searcherContractAddress;
     address searcherPayableAddress; // perhaps remove this - just require the bidding EOA to pay
     uint256 bidAmount;
-}
-
-struct InitializedAddress {
-    address _address;
-    bool _isInitialized;
 }
 
 struct InitializedIndexAddress {
@@ -63,8 +58,8 @@ abstract contract FastLaneEvents {
     );
     event ValidatorWithdrawnBalance(
         address indexed validator,
-        uint256 amount,
-        address indexed caller
+        address indexed caller,
+        uint256 amount
     );
     event AuctionStarted(uint256 indexed auction_number);
     event AuctionProcessingBiddingStopped(uint256 indexed auction_number);
@@ -132,10 +127,10 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
     mapping(uint256 => mapping(address => mapping(address => Bid)))
         internal currentAuctionMap;
 
-    mapping(uint256 => mapping(address => InitializedAddress))
+    mapping(uint256 => mapping(address => bool))
         internal currentInitializedValidatorsMap;
 
-    mapping(uint256 => mapping(address => mapping(address => InitializedAddress)))
+    mapping(uint256 => mapping(address => mapping(address => bool)))
         internal currentInitializedValOppMap;
 
     mapping(uint256 => address[]) internal currentValidatorsArrayMap;
@@ -216,13 +211,13 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
         } else {
             opportunityAddressList.push(opportunityAddress);
             uint256 listLength = opportunityAddressList.length;
+            index = listLength - 1;
             opportunityAddressMap[opportunityAddress] = InitializedIndexAddress(
                 opportunityAddress,
                 true,
-                listLength,
+                index,
                 true
             );
-            index = listLength;
         }
         emit OpportunityAddressAdded(opportunityAddress, index);
     }
@@ -273,13 +268,13 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
         } else {
             validatorAddressList.push(validatorAddress);
             uint256 listLength = validatorAddressList.length;
+            index = listLength - 1;
             validatorAddressMap[validatorAddress] = InitializedIndexAddress(
                 validatorAddress,
                 true,
-                listLength,
+                index,
                 true
             );
-            index = listLength;
         }
         emit ValidatorAddressAdded(validatorAddress, index);
     }
@@ -351,7 +346,11 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
         processing_ongoing = false;
 
         //transfer to PFL the sorely needed $ to cover our high infra costs
-        bid_token.safeTransferFrom(address(this), owner(), outstandingFLBalance);
+        bid_token.safeTransferFrom(
+            address(this),
+            owner(),
+            outstandingFLBalance
+        );
 
         return true;
     }
@@ -469,13 +468,13 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
         //Determine if pair is initialized
         bool is_validator_initialized = currentInitializedValidatorsMap[
             auction_number
-        ][bid.validatorAddress]._isInitialized;
+        ][bid.validatorAddress];
 
         bool is_opportunity_initialized;
         if (is_validator_initialized) {
             is_opportunity_initialized = currentInitializedValOppMap[
                 auction_number
-            ][bid.validatorAddress][bid.opportunityAddress]._isInitialized;
+            ][bid.validatorAddress][bid.opportunityAddress];
         } else {
             // @audit If the validator is not initialized for this round, consider the opportunity not initialized as well?
             is_opportunity_initialized = false;
@@ -497,16 +496,12 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
                 current_top_bid.searcherPayableAddress
             );
             _refundPreviousBidder(current_top_bid);
-
-
-
         } else {
-
             // flag the validator / opportunity combination as initialized
             if (is_validator_initialized == false) {
                 currentInitializedValidatorsMap[auction_number][
                     bid.validatorAddress
-                ] = InitializedAddress(bid.validatorAddress, true);
+                ] = true;
                 currentValidatorsArrayMap[auction_number].push(
                     bid.validatorAddress
                 );
@@ -518,10 +513,7 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
             if (is_opportunity_initialized == false) {
                 currentInitializedValOppMap[auction_number][
                     bid.validatorAddress
-                ][bid.opportunityAddress] = InitializedAddress(
-                    bid.opportunityAddress,
-                    true
-                );
+                ][bid.opportunityAddress] = true;
                 currentPairsArrayMap[auction_number][bid.validatorAddress].push(
                         bid.opportunityAddress
                     );
@@ -535,7 +527,6 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
 
             //verify the bidder has the balance.
             _receiveBid(bid, 0, address(0));
-
         }
 
         emit BidAdded(
@@ -555,14 +546,15 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
     ) external notLiveStage atProcessingStage returns (bool isSuccessful) {
         //make sure the pair hasnt already been processed
         require(
-            currentInitializedValidatorsMap[auction_number][_validatorAddress]
-                ._isInitialized == true,
+            currentInitializedValidatorsMap[auction_number][
+                _validatorAddress
+            ] == true,
             "FL:E-304"
         );
         require(
             currentInitializedValOppMap[auction_number][_validatorAddress][
                 _opportunityAddress
-            ]._isInitialized == true,
+            ] == true,
             "FL:E-305"
         );
 
@@ -595,7 +587,7 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
                 //since this is the last opp for this validator, uninitialize the validator from the current round's validator map
                 currentInitializedValidatorsMap[auction_number][
                     _validatorAddress
-                ] = InitializedAddress(_validatorAddress, false);
+                ] = false;
                 currentPairsCountMap[auction_number][_validatorAddress] = 0;
             }
         } else {
@@ -606,7 +598,7 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
             //mark it already updated
             currentInitializedValOppMap[auction_number][_validatorAddress][
                 _opportunityAddress
-            ] = InitializedAddress(_opportunityAddress, false);
+            ] = false;
 
             //handle the cuts
             uint256 cut = ((top_user_bid.bidAmount * 1000000) - fast_lane_fee) /
@@ -658,8 +650,8 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
 
         emit ValidatorWithdrawnBalance(
             outstandingValidatorWithBalance,
-            outstandingAmount,
-            msg.sender
+            msg.sender,
+            outstandingAmount
         );
     }
 
@@ -676,7 +668,8 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
         view
         returns (bool canExec, bytes memory execPayload)
     {
-        if (_offchain_checker_disabled || _paused || auction_live) return (false, "");
+        if (_offchain_checker_disabled || _paused || auction_live)
+            return (false, "");
 
         // Go workers go
         if (processing_ongoing) {
@@ -697,7 +690,11 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
         return (false, "");
     }
 
-    function processPartialAuctionBatch(ProcessingJobs[] calldata jobs) public atProcessingStage whenNotPaused {
+    function processPartialAuctionBatch(ProcessingJobs[] calldata jobs)
+        public
+        atProcessingStage
+        whenNotPaused
+    {
         uint256 errors = 0;
         uint256 processed = 0;
         require(jobs.length <= processing_batch_size, "FL:E-208");
@@ -752,14 +749,14 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
         //Determine if pair is initialized
         bool is_validator_initialized = currentInitializedValidatorsMap[
             auction_number
-        ][validatorAddress]._isInitialized;
+        ][validatorAddress];
 
         bool is_opportunity_initialized;
 
         if (is_validator_initialized) {
             is_opportunity_initialized = currentInitializedValOppMap[
                 auction_number
-            ][validatorAddress][opportunityAddress]._isInitialized;
+            ][validatorAddress][opportunityAddress];
         } else {
             is_opportunity_initialized = false;
         }
@@ -844,7 +841,11 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
     }
 
     // @audit Potentially Remove?
-    function getUnprocessedValidators(uint256 start, uint256 num_items) public view returns (address[] memory) {
+    function getUnprocessedValidators(uint256 start, uint256 num_items)
+        public
+        view
+        returns (address[] memory)
+    {
         //MIGHT RUN OUT OF GAS - only use if convenient, do not rely on.
 
         address[] memory _unprocessedValidatorList;
@@ -855,14 +856,19 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
             auction_number
         ];
 
-        uint256 end = max > _initializedValidatorList.length ? _initializedValidatorList.length : max;
+        uint256 end = max > _initializedValidatorList.length
+            ? _initializedValidatorList.length
+            : max;
 
-
-        for (uint256 i = _listIndex; i < _initializedValidatorList.length; i++) {
+        for (
+            uint256 i = _listIndex;
+            i < _initializedValidatorList.length;
+            i++
+        ) {
             if (
                 currentInitializedValidatorsMap[auction_number][
                     _initializedValidatorList[i]
-                ]._isInitialized == true
+                ] == true
             ) {
                 _unprocessedValidatorList[
                     _listIndex
@@ -897,7 +903,7 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
             if (
                 currentInitializedValOppMap[auction_number][_validatorAddress][
                     _initializedOpportunityList[i]
-                ]._isInitialized == true
+                ] == true
             ) {
                 _unprocessedOpportunityList[
                     _listIndex
@@ -915,7 +921,7 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
     ) public view returns (bool isInitialized) {
         isInitialized = currentInitializedValOppMap[auction_number][
             _validatorAddress
-        ][_opportunityAddress]._isInitialized;
+        ][_opportunityAddress];
     }
 
     // @audit Potentially Remove?
@@ -926,7 +932,7 @@ contract FastLaneAuction is FastLaneEvents, Ownable, ReentrancyGuard {
     {
         isInitialized = currentInitializedValidatorsMap[auction_number][
             _validatorAddress
-        ]._isInitialized;
+        ];
     }
 
     /***********************************|
